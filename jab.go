@@ -2,42 +2,57 @@ package jab
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 )
 
-type Rule interface {
+type Matcher interface {
 	match(map[string]interface{}) bool
 }
 
-type FieldRule struct {
+type FieldMatcher struct {
 	Field string
 	Value string
 }
 
 type Binding struct {
-	Rule
+	Parent *Template
+	Matcher
 	Struct   interface{}
 	Children []Child
 }
 
-type Template []Binding
+type Template struct {
+	DefaultKey string
+	Bindings   []Binding
+}
+
+func NewTemplate(key string) *Template {
+	return &Template{key, nil}
+}
 
 type Child struct {
 	Field    string
-	Template Template
+	Template *Template
 }
 
-func (rule FieldRule) match(node map[string]interface{}) bool {
-	v, ok := node[rule.Field]
+func (matcher FieldMatcher) match(node map[string]interface{}) bool {
+	v, ok := node[matcher.Field]
 	if !ok {
 		return false
 	}
-	return v == rule.Value
+	return v == matcher.Value
 }
 
-func (t Template) match(node map[string]interface{}) *Binding {
-	for _, binding := range t {
+func (t *Template) Match(value string, typ interface{}) *Binding {
+	binding := &Binding{t, FieldMatcher{t.DefaultKey, value}, typ, nil}
+	t.Bindings = append(t.Bindings, *binding)
+	return binding
+}
+
+func (t *Template) match(node map[string]interface{}) *Binding {
+	for _, binding := range t.Bindings {
 		if binding.match(node) {
 			return &binding
 		}
@@ -45,41 +60,48 @@ func (t Template) match(node map[string]interface{}) *Binding {
 	return nil
 }
 
-var nilValue reflect.Value
+func (b *Binding) AddChild(key string) *Template {
+	t := NewTemplate(b.Parent.DefaultKey)
+	b.Children = append(b.Children, Child{key, t})
+	return t
+}
 
-func parse(node map[string]interface{}, t Template) (interface{}, error) {
+func parse(node map[string]interface{}, t *Template) (interface{}, error) {
 	match := t.match(node)
 	if match == nil {
-		return nilValue, nil
+		return nil, nil
 	}
 	instance := reflect.New(reflect.TypeOf(match.Struct))
 	for _, child := range match.Children {
 		childNode, ok := node[child.Field]
 		if !ok {
-			//XXX better error message
 			err := fmt.Errorf("missing child: %s", child.Field)
-			return nilValue, err
+			return nil, err
 		}
 		childMap, ok := childNode.(map[string]interface{})
 		if !ok {
 			err := fmt.Errorf("field %s is not an object", child.Field)
-			return nilValue, err
+			return nil, err
 		}
 		childInstance, err := parse(childMap, child.Template)
 		if err != nil {
-			return nilValue, err
+			return nil, err
 		}
 		field := instance.FieldByName(child.Field)
 		field.Set(reflect.ValueOf(childInstance))
 	}
-	return instance, nil
+	return instance.Interface(), nil
 }
 
-func Parse(b []byte, t Template) (interface{}, error) {
-	var object map[string]interface{}
-	err := json.Unmarshal(b, &object)
+func Parse(b []byte, t *Template) (interface{}, error) {
+	var root interface{}
+	err := json.Unmarshal(b, &root)
 	if err != nil {
 		return nil, err
+	}
+	object, ok := root.(map[string]interface{})
+	if !ok {
+		return nil, errors.New("input not a JSON object")
 	}
 	out, err := parse(object, t)
 	if err != nil {
