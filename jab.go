@@ -17,19 +17,17 @@ type FieldMatcher struct {
 }
 
 type Binding struct {
-	Parent *Template
 	Matcher
 	Struct   interface{}
 	Children []Child
 }
 
 type Template struct {
-	DefaultKey string
-	Bindings   []Binding
+	Bindings []Binding
 }
 
-func NewTemplate(key string) *Template {
-	return &Template{key, nil}
+func NewTemplate() *Template {
+	return &Template{}
 }
 
 type Child struct {
@@ -45,8 +43,8 @@ func (matcher FieldMatcher) match(node map[string]interface{}) bool {
 	return v == matcher.Value
 }
 
-func (t *Template) Match(value string, typ interface{}) *Binding {
-	binding := &Binding{t, FieldMatcher{t.DefaultKey, value}, typ, nil}
+func (t *Template) MatchKey(key, value string, typ interface{}) *Binding {
+	binding := &Binding{FieldMatcher{key, value}, typ, nil}
 	t.Bindings = append(t.Bindings, *binding)
 	return binding
 }
@@ -60,9 +58,9 @@ func (t *Template) match(node map[string]interface{}) *Binding {
 	return nil
 }
 
-func (b *Binding) AddChild(key string) *Template {
-	t := NewTemplate(b.Parent.DefaultKey)
-	b.Children = append(b.Children, Child{key, t})
+func (b *Binding) AddChild() *Template {
+	t := NewTemplate()
+	b.Children = append(b.Children, Child{})
 	return t
 }
 
@@ -93,6 +91,20 @@ func parse(node map[string]interface{}, t *Template) (interface{}, error) {
 	return instance.Interface(), nil
 }
 
+func parseArray(a []interface{}, t *Template) ([]interface{}, error) {
+	for k, v := range a {
+		o, ok := v.(map[string]interface{})
+		if ok {
+			out, err := parse(o, t)
+			if err != nil {
+				return nil, err
+			}
+			a[k] = out
+		}
+	}
+	return a, nil
+}
+
 func Parse(b []byte, t *Template) (interface{}, error) {
 	var root interface{}
 	err := json.Unmarshal(b, &root)
@@ -100,12 +112,21 @@ func Parse(b []byte, t *Template) (interface{}, error) {
 		return nil, err
 	}
 	object, ok := root.(map[string]interface{})
-	if !ok {
-		return nil, errors.New("input not a JSON object")
-	}
-	out, err := parse(object, t)
-	if err != nil {
-		return nil, err
+	var out interface{}
+	if ok {
+		out, err = parse(object, t)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		a, ok := root.([]interface{})
+		if !ok {
+			return nil, errors.New("input is either a JSON object or a JSON array of objects")
+		}
+		out, err = parseArray(a, t)
+		if err != nil {
+			return nil, err
+		}
 	}
 	err = json.Unmarshal(b, &out)
 	if err != nil {
